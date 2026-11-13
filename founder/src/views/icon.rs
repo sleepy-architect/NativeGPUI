@@ -383,6 +383,24 @@ fn sort_order(lines: &[Line], column: Column) -> Vec<usize> {
         .collect()
 }
 
+fn keys_in_order(lines: &[Line], column: Column) -> Vec<SharedString> {
+    let rank = sort_order(lines, column);
+    let mut index: Vec<usize> = (0..lines.len()).collect();
+    index.sort_by(|&left, &right| rank[left].cmp(&rank[right]).then(left.cmp(&right)));
+    index.into_iter().map(|at| lines[at].key.clone()).collect()
+}
+
+fn reading_index(at: impl Fn(usize) -> (f32, f32), count: usize) -> Vec<usize> {
+    let mut index: Vec<usize> = (0..count).collect();
+    index.sort_by(|&left, &right| {
+        let (a, b) = (at(left), at(right));
+        a.1.total_cmp(&b.1)
+            .then(a.0.total_cmp(&b.0))
+            .then(left.cmp(&right))
+    });
+    index
+}
+
 fn named(key: &SharedString) -> Option<SharedString> {
     let name = Path::new(key.as_ref()).file_name()?.to_str()?;
     Some(SharedString::from(name.to_owned()))
@@ -659,6 +677,23 @@ impl Grid {
         let layout = self.layout.clone()?;
         let lines = layout.lines.upgrade()?;
         Some((layout, lines))
+    }
+
+    fn reading_order(&self) -> Option<Vec<SharedString>> {
+        let (layout, _) = self.standing()?;
+        let index = reading_index(
+            |at| {
+                let point = layout.tiles[at].1;
+                (f32::from(point.x), f32::from(point.y))
+            },
+            layout.tiles.len(),
+        );
+        Some(
+            index
+                .into_iter()
+                .map(|at| layout.tiles[at].0.clone())
+                .collect(),
+        )
     }
 
     fn put(&mut self, moves: impl IntoIterator<Item = (usize, Point<Pixels>)>) {
@@ -1418,6 +1453,17 @@ impl FinderDemo {
             .map(|places| places.arrangement)
     }
 
+    // Arrange By follows that column. Free and grid icons are read left to right, then down.
+    pub(crate) fn icon_drag_order(&self) -> Option<Vec<SharedString>> {
+        if self.view != ICON_VIEW {
+            return None;
+        }
+        match self.arrangement() {
+            Some(Arrangement::By(column)) => Some(keys_in_order(&self.lines(false), column)),
+            _ => self.icons.reading_order(),
+        }
+    }
+
     pub(crate) fn cleans_up(&self) -> bool {
         self.view == ICON_VIEW
             && matches!(
@@ -1525,5 +1571,35 @@ mod tests {
         assert_eq!(sort_order(&lines, Column::Name), [0, 1, 2]);
         assert_eq!(sort_order(&lines, Column::Size), [2, 0, 1]);
         assert_eq!(sort_order(&lines, Column::Modified), [0, 2, 1]);
+        let names: Vec<&str> = keys_in_order(&lines, Column::Size)
+            .iter()
+            .map(|key| {
+                lines
+                    .iter()
+                    .find(|line| &line.key == key)
+                    .unwrap()
+                    .row
+                    .name
+                    .as_ref()
+            })
+            .collect();
+        assert_eq!(names, ["b", "c", "a"]);
+    }
+
+    #[test]
+    fn icons_are_read_across_each_row() {
+        // 17 icons, 5 across: the IMG_4526…IMG_4542 grid, stored back to front.
+        let count = 17;
+        let across = 5;
+        let stored: Vec<usize> = (0..count).rev().collect();
+        let read = reading_index(
+            |at| {
+                let slot = stored[at];
+                ((slot % across) as f32, (slot / across) as f32)
+            },
+            count,
+        );
+        let names: Vec<usize> = read.into_iter().map(|at| stored[at]).collect();
+        assert_eq!(names, (0..count).collect::<Vec<_>>());
     }
 }

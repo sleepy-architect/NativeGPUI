@@ -29,6 +29,17 @@ pub(crate) fn outermost(keys: Vec<SharedString>) -> Vec<SharedString> {
     outermost_by(keys, |key| Path::new(key.as_ref()))
 }
 
+/// `place` is an index in the view. Keys the view is not showing keep their relative order, last.
+pub(crate) fn order_for_drag<T>(keys: Vec<T>, place: impl Fn(&T) -> Option<usize>) -> Vec<T> {
+    let mut ranked: Vec<(usize, usize, T)> = keys
+        .into_iter()
+        .enumerate()
+        .map(|(seq, key)| (place(&key).unwrap_or(usize::MAX), seq, key))
+        .collect();
+    ranked.sort_by_key(|(rank, seq, _)| (*rank, *seq));
+    ranked.into_iter().map(|(_, _, key)| key).collect()
+}
+
 const TYPING: Duration = Duration::from_secs(1);
 
 const DEEP_LEVELS: usize = 16;
@@ -429,5 +440,65 @@ mod tests {
     fn remote_keys_and_duplicates() {
         let got = outermost(paths(&["sftp://h/a/b", "sftp://h/a", "/x", "/x"]));
         assert_eq!(got, paths(&["sftp://h/a", "/x", "/x"]));
+    }
+
+    fn shots(from: u32, to: u32) -> Vec<String> {
+        (from..=to).map(|n| format!("/Shots/IMG_{n}.jpg")).collect()
+    }
+
+    #[test]
+    fn dragged_files_follow_the_view_not_the_order_they_were_grabbed() {
+        let photos = shots(4522, 4525);
+        let at = |key: &String| photos.iter().position(|name| name == key);
+        // The permutation a browser stored after a drop, then an arbitrary click order.
+        let uploaded = vec![
+            photos[2].clone(),
+            photos[3].clone(),
+            photos[0].clone(),
+            photos[1].clone(),
+        ];
+        assert_eq!(super::order_for_drag(uploaded, at), photos);
+        let clicked = vec![
+            photos[3].clone(),
+            photos[0].clone(),
+            photos[2].clone(),
+            photos[1].clone(),
+        ];
+        assert_eq!(super::order_for_drag(clicked, at), photos);
+
+        let batch = shots(4526, 4542);
+        let at = |key: &String| batch.iter().position(|name| name == key);
+        let mut grabbed = batch.clone();
+        grabbed.rotate_left(7);
+        assert_eq!(super::order_for_drag(grabbed, at), batch);
+    }
+
+    #[test]
+    fn dragged_files_follow_the_view_when_that_is_not_filename_order() {
+        let dated = ["c.jpg", "a.jpg", "b.jpg"].map(String::from);
+        let at = |key: &String| dated.iter().position(|name| name == key);
+        let clicked = vec![dated[2].clone(), dated[0].clone(), dated[1].clone()];
+        assert_eq!(super::order_for_drag(clicked, at), dated.to_vec());
+        let with_strays = vec![
+            String::from("c.jpg"),
+            String::from("gone.jpg"),
+            String::from("a.jpg"),
+        ];
+        assert_eq!(super::order_for_drag(with_strays, at), vec![
+            String::from("c.jpg"),
+            String::from("a.jpg"),
+            String::from("gone.jpg"),
+        ]);
+    }
+
+    #[test]
+    fn an_outgoing_drag_keeps_view_order_after_nested_items_are_dropped() {
+        let view = paths(&["/a", "/a/b", "/m", "/z"]);
+        let grabbed = outermost(paths(&["/z", "/a/b", "/a", "/m"]));
+        let at = |key: &PathBuf| view.iter().position(|name| name == key);
+        assert_eq!(
+            super::order_for_drag(grabbed, at),
+            paths(&["/a", "/m", "/z"])
+        );
     }
 }
