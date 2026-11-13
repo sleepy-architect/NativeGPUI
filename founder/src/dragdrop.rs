@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -455,7 +455,9 @@ impl FinderDemo {
         if at.x >= self.metrics().left && !outside {
             return;
         }
-        let keys = event.drag(cx).keys(&self.selected.snapshot());
+        // Selection is a HashSet, so `keys` is not the order on screen. AppKit copies this
+        // sequence into every file URL on the dragging pasteboard.
+        let keys = self.order_dragged(event.drag(cx).keys(&self.selected.snapshot()));
         let handed = if keys.iter().any(|key| crate::remote::is_remote(key)) {
             self.drag_out(&keys, window, cx)
         } else {
@@ -465,6 +467,34 @@ impl FinderDemo {
         if handed {
             cx.stop_active_drag(window);
         }
+    }
+
+    fn order_dragged(&self, keys: Vec<SharedString>) -> Vec<SharedString> {
+        if keys.len() < 2 {
+            return keys;
+        }
+        if let Some(order) = self.icon_drag_order().or_else(|| self.column_drag_order()) {
+            let mut place: HashMap<&str, usize> = HashMap::with_capacity(order.len());
+            for (at, key) in order.iter().enumerate() {
+                place.entry(key.as_ref()).or_insert(at);
+            }
+            return crate::select::order_for_drag(keys, |key| place.get(key.as_ref()).copied());
+        }
+        let lines = self.focused_lines();
+        crate::select::order_for_drag(keys, |key| self.line_at(&lines, key))
+    }
+
+    fn column_drag_order(&self) -> Option<Vec<SharedString>> {
+        if self.view != COLUMN_VIEW {
+            return None;
+        }
+        let (chain, _) = self.column_chain();
+        let mut order = Vec::new();
+        for rung in &chain {
+            let lines = self.column_listing(rung.folder);
+            order.extend(lines.iter().map(|line| line.key.clone()));
+        }
+        Some(order)
     }
 
     pub(crate) fn files_dropped(
